@@ -30,18 +30,60 @@ function isAlphaZero(imageData, col, row) {
     return (imageData.data[linearCoords(imageData, col, row) + 3] == 0);
 }
 
-function interpolate(imageData, point) {
-    var x = point[0];
-    var y = point[1];
-    var col = clamp(Math.round(x), 0, imageData.width-1);
-    var row = clamp(Math.round(y), 0, imageData.height-1);
-    return getPixel(imageData, col, row);
+function nearestInterpolator(func) {
+  return function(x, y) {
+    return func(Math.round(x), Math.round(y))
+  }
+}
+
+function bilinearInterpolator(func) {
+  // https://observablehq.com/@sw1227/bilinear-interpolation-of-tile
+
+  return function(x, y) {
+    var x1 = Math.floor(x);
+    var x2 = Math.ceil(x);
+    var y1 = Math.floor(y);
+    var y2 = Math.ceil(y);
+
+    if ((x1 === x2) && (y1 === y2)) return func(x1, y1);
+    if (x1 === x2) {
+      return (func(x1, y1) * (y2 - y) + func(x1, y2) * (y - y1)) / (y2 - y1);
+    }
+    if (y1 === y2) {
+      return (func(x1, y1) * (x2 - x) + func(x2, y1) * (x - x1)) / (x2 - x1);
+    }
+
+    // else: x1 != x2 and y1 != y2
+    return (
+      func(x1, y1) * (x2 - x) * (y2 - y) +
+      func(x2, y1) * (x - x1) * (y2 - y) +
+      func(x1, y2) * (x2 - x) * (y - y1) +
+      func(x2, y2) * (x - x1) * (y - y1)
+    )
+    / ((x2 - x1) * (y2 - y1));
+  }
+}
+
+function interpolate(interpolator, imageData, point) {
+    var out = [];
+    for (var channel = 0; channel < 4; channel++) {
+      var pxFn = function(x, y) {
+        var col = clamp(x, 0, imageData.width-1);
+        var row = clamp(y, 0, imageData.height-1);
+        return getPixel(imageData, x, y)[channel];
+      }
+      var interpFn = interpolator(pxFn);
+      var res = interpFn(point[0], point[1]);
+      out.push(res);
+    }
+    return out;
 }
 
 export default function() {
-    var srcProj, dstProj,
+    var interpolator, srcProj, dstProj,
         dstContext, dstCanvas,
         maskObject;
+    var tempData = [];
 
     function createCanvas(width, height) {
         var canvas = document.createElement('canvas');
@@ -51,6 +93,7 @@ export default function() {
     }
 
     function warp(srcImage) {
+        if (!interpolator) interpolator = nearestInterpolator;
         var srcCanvas = createCanvas(srcImage.width, srcImage.height),
             srcContext = srcCanvas.getContext('2d'),
             maskData = makeMask();
@@ -71,11 +114,17 @@ export default function() {
 
                 var projectedPoint = [col+0.5, row+0.5],
                     inversePoint = inverseProjection(projectedPoint);
-                setPixel(dstImage, col, row, interpolate(srcImage, inversePoint));
+                setPixel(dstImage, col, row, interpolate(interpolator, srcImage, inversePoint));
             }
         }
 
         dstContext.putImageData(dstImage, 0, 0);
+    }
+
+    warp.setInterpolator = function(_) {
+      if (_ === "nearest") { interpolator = nearestInterpolator;}
+      if (_ === "bilinear") { interpolator = bilinearInterpolator;}
+      return warp;
     }
 
     warp.dstProj = function(_) {
